@@ -1,11 +1,15 @@
+include("perception.jl")
+include("measurements.jl")
+
 struct MyLocalizationType
     field1::Int
     field2::Float64
 end
 
 struct MyPerceptionType
-    field1::Int1
-    field2::Float64
+    time::Float64
+    μ::Float64
+    Σ::Array{Float64, 2}
 end
 
 function localize(gps_channel, imu_channel, localization_state_channel)
@@ -44,8 +48,30 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
         latest_localization_state = fetch(localization_state_channel)
         
         # process bounding boxes / run ekf / do what you think is good
+        μ_prev = [latest_localization_state[1][1] latest_localization_state[1][2] 0 0 13.2 5.7 5.3]
+        Σ_prev = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+        Σₘ = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+        Σₚ = Diagonal([0.1, 0.1, 0.1, 0.1])
+        curr_time = -Inf
+        prev_time = 0
+        for i in fresh_cam_meas
+            if i.time > curr_time
+                curr_time = i.time
+                if !isempty(i.bounding_boxes)
+                    x_ego = latest_localization_state[1:2]
+                    Δ = curr_time - prev_time
+                    temp = EKF(i.camera_id, μ_prev, Σ_prev, Σₘ, Σₚ, i.bounding_boxes[1], x_ego, Δ)
+                    μ_prev = temp[1]
+                    Σ_prev = temp[2]
+                    prev_time = curr_time
+                end
+            else
+                continue
+            end
+            
+        end
 
-        perception_state = MyPerceptionType(0,0.0)
+        perception_state = MyPerceptionType(time(), μ_prev, Σ_prev)
         if isready(perception_state_channel)
             take!(perception_state_channel)
         end

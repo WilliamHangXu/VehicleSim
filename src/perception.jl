@@ -33,16 +33,20 @@ This function calculates the coordinates of the 8 corners of the 3D bounding box
 object.
 @param
 position: position of the object ([x,y,z]) in world frame
+θ: heading of the object
 box_size: size of bounding box
 @output
 An array of 8 points ([x,y,z]). These are the 8 corners of the 3D bounding box describing an object.
 """
-function get_3d_bbox_corners_perception(position, box_size)
+function get_3d_bbox_corners_perception(position, θ, box_size)
+    d1 = cos(θ) * box_size[1] - sin(θ) * box_size[2]
+    d2 = sin(θ) * box_size[1] + cos(θ) * box_size[2]
+    d3 = box_size[3]
     T = get_body_transform_perception(position)
     corners = []
-    for dx in [-box_size[1]/2, box_size[1]/2]
-        for dy in [-box_size[2]/2, box_size[2]/2]
-            for dz in [-box_size[3]/2, box_size[3]/2]
+    for dx in [-d1/2, d1/2]
+        for dy in [-d2/2, d2/2]
+            for dz in [-d3/2, d3/2]
                 push!(corners, T*[dx, dy, dz, 1])
             end
         end
@@ -94,146 +98,132 @@ end
 # Modified from cameras in measurement.jl by Gavin and William
 This function predicts bounding box measurements based on the state of the object x being tracked.
 @param
+id: camera id (1 or 2)
 x: the state of the object being tracked [p1, p2, θ, v, l, w, h]
-x_ego: the state of ego vehicle # TODO figure out what this looks like
+x_ego: the state of ego vehicle [p1, p2, p3, r, p, y]
 @output
-z: bounding box measurement of the object being tracked [y1, y2, y3, y4, y5, y6, y7, y8]
-indices: [[index_1][index_2]], where index_n is an array of size 4 that contains the index of 3d bbox 
-         corners that contributes to the corresponding value of y1, y2, y3, y4 for camera n.
-rot: This is an array of two matrices. They change a point from world frame into rotated camera frame
-     for each of the cameras respectively.
-rot_cam: [[rot_coord_1][rot_coord_2]], where rot_coord_n is and array of the coordinate of the 3d bbox 
-         corner expressed in rotated camera frame for camera n. These corners are the corners stored 
-         in indices.
+z: bounding box measurement of the object being tracked [y1, y2, y3, y4]
+index: an array of size 4 that contains the index of 3d bbox corners that contributes to the 
+       corresponding value of y1, y2, y3, y4 for camera id.
+rot: A matrix that changes a point from world frame into rotated camera frame.
+rot_coord: an array of the coordinate of the 3d bbox corner expressed in rotated camera frame for 
+           camera id. These corners are the corners stored in index.
 """
-function h(x, x_ego, focal_len=0.01, pixel_len=0.001, image_width=640, image_height=480)
+function h(id, x, x_ego, focal_len=0.01, pixel_len=0.001, image_width=640, image_height=480)
 
     # the position of the ego vehicle in world frame
-    x_ego_pos_world = x_ego[1:3]      # p1, p2, p3
+    x_ego_pos_world = x_ego[1]      # p1, p2, p3
     # the position of the object in world frame
     x_pos_world = [x[1], x[2], 2.645] # p1, p2, p3
     # the angle of the ego vehicle
-    x_ego_angles = x_ego[4:6]         # r, p, y
+    x_ego_angles = x_ego[2]         # quaternion
     # the size of object
     x_size = x[5:7]                   # l, w, h
     # this stores the 2d bounding box coordinates
     z = []
-    # this array stores two index arrays. See below.
-    indices = []
-    # this array stores two rot_coord arrays. See below.
-    rot_cam = []
 
     # corners_world is an array that contains coordinates of 3d bbox of the object in world frame
     corners_world = get_3d_bbox_corners_perception(x_pos_world, x_size)
 
     # This part takes care of the camera's angle and its relative position w.r.t. ego.
-    T_body_cam1 = get_cam_transform(1)
-    T_body_cam2 = get_cam_transform(2)
+    T_body_cam = get_cam_transform(id)
 
     # This part changes the camera frame into the rotated camera frame, where z points forward.
     T_cam_camrot = get_rotated_camera_transform()
 
     # This part combines the two transformations together.
-    T_body_camrot1 = multiply_transforms(T_body_cam1, T_cam_camrot)
-    T_body_camrot2 = multiply_transforms(T_body_cam2, T_cam_camrot)
+    T_body_camrot = multiply_transforms(T_body_cam, T_cam_camrot)
 
     # This part takes care of ego's rpy angles and the object's relative position w.r.t. ego.
-    T_world_body = get_body_transform_perception(x_ego_pos_world, RotXYZ(x_ego_angles))
+    T_world_body = get_body_transform(x_ego_pos_world, x_ego_angles)
 
     # Combines all the transformations together (order matters)
-    T_world_camrot1 = multiply_transforms(T_world_body, T_body_camrot1) 
-    T_world_camrot2 = multiply_transforms(T_world_body, T_body_camrot2)
+    T_world_camrot = multiply_transforms(T_world_body, T_body_camrot) 
 
     # We need to invert the transformations above to get the correct order.
     # change to ego frame -> adjust rpy angle -> change to camera frame -> adjust cam angle -> 
     # change to rotated camera frame
-    T_camrot1_world = invert_transform(T_world_camrot1)
-    T_camrot2_world = invert_transform(T_world_camrot2)
+    T_camrot_world = invert_transform(T_world_camrot)
 
-    # This is the rot that is part of the return values.
-    rot = [T_camrot1_world, T_camrot2_world]
+    # initialize the boundaries of the 2d bbox
+    left = image_width/2
+    right = -image_width/2
+    top = image_height/2
+    bot = -image_height/2
+    
+    # apply the transformation to points in corners_world to convert them into rotated camera frame
+    vehicle_corners = [T_camrot_world * [pt;1] for pt in corners_world]
 
-    for transform in (T_camrot1_world, T_camrot2_world)
+    # Keep track of the index of bbox corner in the loop below.
+    num = 1
 
-        # initialize the boundaries of the 2d bbox
-        left = image_width/2
-        right = -image_width/2
-        top = image_height/2
-        bot = -image_height/2
-        
-        # apply the transformation to points in corners_world to convert them into rotated camera frame
-        vehicle_corners = [transform * [pt;1] for pt in corners_world]
+    # This array tells us which corners contribute to the values of top, left, bottom, right, respectively
+    index = [1,1,1,1]
 
-        # Keep track of the index of bbox corner in the loop below.
-        num = 1
+    # This array contains the coordinates of the points stored in index, in rotated camera frame
+    rot_coord = []
 
-        # This array tells us which corners contribute to the values of top, left, bottom, right, respectively
-        index = [1,1,1,1]
-
-        # This array contains the coordinates of the points stored in index, in rotated camera frame
-        rot_coord = []
-
-        for corner in vehicle_corners
-            if corner[3] < focal_len
-                break
-            end
-            px = focal_len*corner[1]/corner[3]
-            py = focal_len*corner[2]/corner[3]
-            left_temp = left
-            right_temp = right
-            top_temp = top
-            bot_temp = bot
-            left = min(left, px)
-            right = max(right, px)
-            top = min(top, py)
-            bot = max(bot, py)
-
-            # Update index. The code above finds the min/max value for x/y. When we find a new min/max,
-            # the value (left, right, top, bot) changes. If it changes, we update index so that we
-            # know which corner contributes to this new value.
-            if top != top_temp
-                index[1] = num
-            end
-            if left != left_temp
-                index[2] = num
-            end
-            if bot != bot_temp
-                index[3] = num
-            end
-            if right != right_temp
-                index[4] = num
-            end
-            num += 1
+    for corner in vehicle_corners
+        if corner[3] < focal_len
+            break
         end
+        px = focal_len*corner[1]/corner[3]
+        py = focal_len*corner[2]/corner[3]
+        left_temp = left
+        right_temp = right
+        top_temp = top
+        bot_temp = bot
+        left = min(left, px)
+        right = max(right, px)
+        top = min(top, py)
+        bot = max(bot, py)
 
-        # Add the corresponding coordinates (rotated camera frame) into rot_coord.
-        for j in index
-            push!(rot_coord, vehicle_corners[j])
+        # Update index. The code above finds the min/max value for x/y. When we find a new min/max,
+        # the value (left, right, top, bot) changes. If it changes, we update index so that we
+        # know which corner contributes to this new value.
+        if top != top_temp
+            index[1] = num
         end
-
-        # convert image frame coordinates into pixel numbers
-        top = convert_to_pixel(image_height, pixel_len, top) # top 0.00924121388699952 => 251
-        bot = convert_to_pixel(image_height, pixel_len, bot)
-        left = convert_to_pixel(image_width, pixel_len, left)
-        top = convert_to_pixel(image_width, pixel_len, right)
-
-        push!(z, SVector(top, left, bot, right))
-        push!(indices, index)
-        push!(rot_cam, rot_coord)
+        if left != left_temp
+            index[2] = num
+        end
+        if bot != bot_temp
+            index[3] = num
+        end
+        if right != right_temp
+            index[4] = num
+        end
+        num += 1
     end
-    [z, indices, rot, rot_cam]
+
+    # Add the corresponding coordinates (rotated camera frame) into rot_coord.
+    for j in index
+        push!(rot_coord, vehicle_corners[j])
+    end
+
+    # convert image frame coordinates into pixel numbers
+    top = convert_to_pixel(image_height, pixel_len, top) # top 0.00924121388699952 => 251
+    bot = convert_to_pixel(image_height, pixel_len, bot)
+    left = convert_to_pixel(image_width, pixel_len, left)
+    top = convert_to_pixel(image_width, pixel_len, right)
+
+    # 2d bbox information
+    z = SVector(top, left, bot, right)
+    
+    [z, index, T_camrot_world, rot_coord]
 end
 
 """
 This function calculates the jacobian of h function.
 @param
+x: the input of h.
 h: The output of h
 focal_len: focal length of the camera
 pixel_len: size of a pixel
 @output
 The jacobian of h. Should be a 8*7 matrix.
 """
-function jac_h(h, focal_len=0.01, pixel_len=0.001)
+function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
     jac = []
 
     # j4 is the jacobian of the matrix that converts image frame into pixel values.
@@ -241,41 +231,39 @@ function jac_h(h, focal_len=0.01, pixel_len=0.001)
     0 1/pixel_len]
 
     # two cameras, each camera's 2d bbox has 4 values.
-    for i = 1:2
-        for j = 1:4
 
-            # j1 is the jacobian of the matrix that calculates world-frame coordinates of corners
-            # of 3d bbox.
-            j1 = jac_h_j1(h[2][i][j])
+    for j = 1:4
+        # j1 is the jacobian of the matrix that calculates world-frame coordinates of corners
+        # of 3d bbox.
+        j1 = jac_h_j1(x, h[2][j])
 
-            # j2 is the jacobian of the matrix that converts world-frame coordinates into rotated
-            # camera frame.
-            j2 = h[3][i]
+        # j2 is the jacobian of the matrix that converts world-frame coordinates into rotated
+        # camera frame.
+        j2 = h[3]
 
-            # These are the xyz coordinates of a corner
-            c1 = h[4][i][j][1]
-            c2 = h[4][i][j][2]
-            c3 = h[4][i][j][3]
+        # These are the xyz coordinates of a corner
+        c1 = h[4][j][1]
+        c2 = h[4][j][2]
+        c3 = h[4][j][3]
 
-            # j3 is the jacobian of the matrix that converts coordinates from rotate camera frame
-            # into image frame (y1, y2)
-            j3 = [
-                focal_len/c3 0 -focal_len*c1*c3^(-2)
-                0 focal_len/c3 -focal_len*c2*c3^(-2)
-            ]
+        # j3 is the jacobian of the matrix that converts coordinates from rotate camera frame
+        # into image frame (y1, y2)
+        j3 = [
+            focal_len/c3 0 -focal_len*c1*c3^(-2)
+            0 focal_len/c3 -focal_len*c2*c3^(-2)
+        ]
 
-            # Use chain rule to get the overall jacobian of the entire function. This should be 2*7
-            j = j4 * j3 * j2 * j1
+        # Use chain rule to get the overall jacobian of the entire function. This should be 2*7
+        j = j4 * j3 * j2 * j1
 
-            # If we are dealing with top or bottom, we only need the second row of the jacobian, 
-            # because only the y value of the point contributes to top/bottom. Similarly, if we are
-            # dealing with left or right, we only need the first row of the jacobian.
-            if j == 1 || j == 3
-                push!(jac, j[2,:]')
-            else
-                push!(jac, j[1,:]')
-            end            
-        end
+        # If we are dealing with top or bottom, we only need the second row of the jacobian, 
+        # because only the y value of the point contributes to top/bottom. Similarly, if we are
+        # dealing with left or right, we only need the first row of the jacobian.
+        if j == 1 || j == 3
+            push!(jac, j[2,:]')
+        else
+            push!(jac, j[1,:]')
+        end            
     end
     jac
 end
@@ -297,13 +285,36 @@ index: the index of the corner that we want. (We are looking down to the 1357 pl
 @output
 The jacobian.
 """
-function jac_h_j1(index)
+function jac_h_j1(x, index)
+    θ = x[3]
+    l = x[5]
+    w = x[6]
     # This function turns index-1 into a 3-digit binary number. (i.e. 7->111)
     exp = digits(index-1, base=2, pad=3)
-    exp += [1 1 1]
+    exp += [1;1;1]
     [
-    1 0 0 0 0.5*(-1)^exp[3] 0 0
-    0 1 0 0 0 0.5*(-1)^exp[2] 0
+    1 0 0.5*(-1)^(exp[3]+1)(sin(θ)*l+cos(θ)*w) 0 0.5*(-1)^exp[3]*cos(θ) (-1)^(exp[3]+1)*sin(θ) 0
+    0 1 0.5*(-1)^exp[3]*cos(θ)*l 0 0.5*(-1)^exp[3]*sin(θ) 0.5*(-1)^exp[3]*cos(θ)*w 0
     0 0 0 0 0 0 0.5*(-1)^exp[1]        
     ]
+end
+
+"""
+The EKF driver.
+Previous measurement: P(xₖ | xₖ₋₁) = 𝒩(μₖ₋₁, Σₖ₋₁)
+Process model: P(xₖ | xₖ₋₁) = 𝒩(f(xₖ₋₁), Σₚ)
+Measurement model: P(zₖ | xₖ) = 𝒩(h(xₖ, x_egoₖ), Σₘ)
+
+@param
+id: camera id
+"""
+function EKF(id, μₖ₋₁, Σₖ₋₁, Σₘ, Σₚ, zₖ, x_ego, Δ)
+    A = jac_f(μₖ₋₁, Δ)
+    Σ̂  = Σₘ + A * Σₖ₋₁ * A'
+    μ̂  = f(μₖ₋₁, Δ)
+    h1 = h(id, μ̂ , x_ego)
+    C = jac_h(μ̂ , h1)
+    Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
+    μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (zₖ))
+    [μ, Σ]
 end
