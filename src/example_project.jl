@@ -2,13 +2,19 @@ include("perception.jl")
 include("measurements.jl")
 
 struct MyLocalizationType
-    field1::Int
-    field2::Float64
+    time::Float64
+    μ::Array{Array{Float64}}
+    Σ::Array{Array{Float64, 2}}
 end
 
+"""
+time: the time at which the corresponding camera measurement was taken.
+μ: an array of states of the objects being tracked.
+Σ: an array of variances of the states of objects being tracked.
+"""
 struct MyPerceptionType
     time::Float64
-    μ::Float64
+    μ::SVector{13, Float64}
     Σ::Array{Float64, 2}
 end
 
@@ -37,41 +43,103 @@ function localize(gps_channel, imu_channel, localization_state_channel)
 end
 
 function perception(cam_meas_channel, localization_state_channel, perception_state_channel)
-    # set up stuff
+    
     while true
+
+        # obtain camera measurements
         fresh_cam_meas = []
         while isready(cam_meas_channel)
             meas = take!(cam_meas_channel)
             push!(fresh_cam_meas, meas)
         end
 
+        # Should we do this in the loop?
+        # obtain localization information
         latest_localization_state = fetch(localization_state_channel)
+        loc_state = latest_localization_state.μ
+        loc_time = latest_localization_state.time
         
-        # process bounding boxes / run ekf / do what you think is good
-        μ_prev = [latest_localization_state[1][1] latest_localization_state[1][2] 0 0 13.2 5.7 5.3]
-        Σ_prev = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+        # Initial values of μ and Σ for x0
+        μ_init = [loc_state[1][1] loc_state[1][2] 0 0 13.2 5.7 5.3]
+        Σ_init = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+
+        # μₖ₋₁ and Σₖ₋₁. They are initialized as their initial value.
+        μ_prev = μ_init
+        Σ_prev = Σ_init
+
+        # Σ for measurement model and process model. Probably need to finetune them.
         Σₘ = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
         Σₚ = Diagonal([0.1, 0.1, 0.1, 0.1])
+
+        # curr_time is the time at which the currently processing camera measurement is obtained.
         curr_time = -Inf
+
+        # prev_time is the time at which the previously processed camera measurement is obtained.
         prev_time = 0
+
+        # μ_prev_list is a list of predicted states of objects described by the bboxes in the previous 
+        # camera measurements. Σ_prev_list is similar, but it's for Σ. They are updated after EKF has
+        # processed each camera measurement.
+        μ_prev_list = []
+        Σ_prev_list = []
+
+        # Process camera measurements.
         for i in fresh_cam_meas
+
+            # clear these two lists.
+            μ_prev_list = []
+            Σ_prev_list = []
+
+            # if i.time < curr_time, we just discard this measurement.
             if i.time > curr_time
                 curr_time = i.time
                 if !isempty(i.bounding_boxes)
-                    x_ego = latest_localization_state[1:2]
+                    
+                    # In case the localization information was not obtained at the same at which the
+                    # camera measurement was obtained, we predict the localization information at the
+                    # time the camera measurement was obtained, using the given localization.
+                    x_ego = rigid_body_dynamics(loc_state[1], loc_state[2], loc_state[3], 
+                                                loc_state[4], curr_time - loc_time)
+
+                    # Δ is the time step.
                     Δ = curr_time - prev_time
-                    temp = EKF(i.camera_id, μ_prev, Σ_prev, Σₘ, Σₚ, i.bounding_boxes[1], x_ego, Δ)
-                    μ_prev = temp[1]
-                    Σ_prev = temp[2]
-                    prev_time = curr_time
+
+                    # assign μ_prev to bounding boxes
+                    μ_index = assign_bb(i.camera_id, μ_prev_list, i.bounding_boxes, x_ego, Δ)
+
+                    # Extended Kalman Filter
+                    for j in eachindex(i.bounding_boxes)
+
+                        # if bbox cannot be matched with a previous object, we perform EKF from start
+                        # by giving it initial values for μ and Σ
+                        if μ_index[j] != 0
+                            μ_prev = μ_prev_list[μ_index[j]]
+                            Σ_prev = Σ_prev_list[μ_index[j]]
+                        else
+                            μ_prev = μ_init
+                            Σ_prev = Σ_init
+                        end
+                        A = jac_f(μ_prev, Δ)
+                        Σ̂  = Σₘ + A * Σ_prev * A'
+                        μ̂  = f(μ_prev, Δ)
+                        h1 = h(i.camera_id, μ̂ , x_ego)
+                        C = jac_h(μ̂ , h1)
+                        Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
+                        μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (i.bounding_boxes[j]))
+                        μ_prev = μ
+                        push!(μ_prev_list, μ_prev)
+                        Σ_prev = Σ
+                        push!(Σ_prev_list, Σ_prev)
+                    end
                 end
+                prev_time = curr_time
             else
                 continue
             end
-            
         end
 
-        perception_state = MyPerceptionType(time(), μ_prev, Σ_prev)
+        # Output.
+        perception_state = MyPerceptionType(curr_time, μ_prev_list, Σ_prev_list)
         if isready(perception_state_channel)
             take!(perception_state_channel)
         end

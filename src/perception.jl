@@ -300,7 +300,7 @@ function jac_h_j1(x, index)
 end
 
 """
-The EKF driver.
+The EKF driver. Currently not in use.
 Previous measurement: P(xₖ | xₖ₋₁) = 𝒩(μₖ₋₁, Σₖ₋₁)
 Process model: P(xₖ | xₖ₋₁) = 𝒩(f(xₖ₋₁), Σₚ)
 Measurement model: P(zₖ | xₖ) = 𝒩(h(xₖ, x_egoₖ), Σₘ)
@@ -317,4 +317,142 @@ function EKF(id, μₖ₋₁, Σₖ₋₁, Σₘ, Σₚ, zₖ, x_ego, Δ)
     Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
     μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (zₖ))
     [μ, Σ]
+end
+
+"""
+Given the coordinates of two 2d bboxes, calculate the ratio of the area of intersection and union.
+This is know as IOU. IOU < 1. Large IOU value indicates that the two bboxes overlap a lot.
+EXTREMELY stupid implementation.
+(xa1, ya1)-----------------
+|                         |
+|                         |
+|                         |
+|                         |
+|                         |
+|                         |
+|                         |
+|                         |
+|                         |
+-----------------(xa2, ya2)
+"""
+function iou_bb(bb_a, bb_b)
+    xa1, ya1, xa2, ya2 = bb_a
+    xb1, yb1, xb2, yb2 = bb_b
+    intersection = -1
+    if xa1 <= xb1 && ya1 >= yb1
+        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xa2-xb1)*(yb1-ya2)
+        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xb2-xb1)*(yb1-ya2)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
+            intersection = (xa2-xb1)*(yb1-yb2)
+        elseif xa2 >= xb2 && ya2 <= yb2
+            intersection = (xb2-xb1)*(yb1-yb2)
+        else
+            intersection = -1
+        end
+    elseif xa1 <= xb2 && xa1 > xb1 && ya1 >= yb1
+        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xa2-xa1)*(yb1-ya2)
+        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xb2-xa1)*(yb1-ya2)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
+            intersection = (xa2-xa1)*(yb1-yb2)
+        elseif xa2 >= xb2 && ya2 <= yb2
+            intersection = (xb2-xa1)*(yb1-yb2)
+        else
+            intersection = -1
+        end
+    elseif xa1 <= xb1 && ya1 >= yb2 && ya1 < yb1
+        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xa2-xb1)*(ya1-ya2)
+        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xb2-xb1)*(ya1-ya2)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
+            intersection = (xa2-xb1)*(ya1-yb2)
+        elseif xa2 >= xb2 && ya2 <= yb2
+            intersection = (xb2-xb1)*(ya1-yb2)
+        else
+            intersection = -1
+        end
+    elseif xa1 > xb1 && xa1 <= xb2 && ya1 < yb1 && ya1 >= yb2
+        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xa2-xa1)*(ya1-ya2)
+        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
+            intersection = (xb2-xa1)*(ya1-ya2)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
+            intersection = (xa2-xa1)*(ya1-yb2)
+        elseif xa2 >= xb2 && ya2 <= yb2
+            intersection = (xb2-xa1)*(ya1-yb2)
+        else
+            intersection = -1
+        end
+    else
+        intersection = -1
+    end
+    union = (xa2-xa1)*(ya1-ya2) + (xb2-xb1)*(yb1-yb2) - intersection
+    return intersection/union
+end
+
+"""
+The purpose of this function is to match bounding boxes in camera measurement k with those in camera
+measurement k-1. An external package, Hungarian, is used.
+https://github.com/Gnimuc/Hungarian.jl
+@param
+camera_id: camera id
+prev_state: an array of states. These are the output of the previous run of EKF (the states of objects
+            described by bounding boxes in camera measurement k-1)
+bb: bounding boxes in camera measurement k
+x_ego: the state of our vehicle when camera measurement k-1 was collected
+iou_thr: threashold of iou value. Notice that small iou value indicates poor relation. If the iou value
+         is less than the threshold, we do not consider two bounding boxes to be related at all.
+Δ: time difference between camera measurement k-1 and camera measurement k.
+@output
+An array. array[i] is the index of bbox in camera measurement k-1 that can be matched with the ith 
+bbox in camera measurement k. If array[i] == 0, then it is likely that the ith bbox describes a vehicle
+that has just entered the vision of our vehicle, and we need to start a new EKF for it.
+"""
+function assign_bb(camera_id, prev_state, bb, x_ego, iou_thr=0.5, Δ)
+
+    # From the previous result of EKF (the estimated state of the object in the bboxes from camera 
+    # measurement k-1), we use our f function and h function to predict the bbox coordinates of these 
+    # object in camera measurement k. Then, we try to pair these predicted bboxes with the real bboxes
+    # obtained in camera measurement k.
+    # This array contains the predicted bboxes.
+    bb_p = []
+    for i in prev_state
+        state_p = f(i, Δ)
+        h_p = h(camera_id, state_p, x_ego)
+        push!(bb_p, h_p)
+    end
+
+    # This is the cost matrix of the Hungarian Algorithm.
+    cost = []
+    for i in bb_p
+        temp = []
+        for j in bb
+            iou  = iou_BB(i, j)
+            if iou < iou_thr
+                push!(temp, missing)
+            else
+                push!(temp, 1-iou)
+            end
+        end
+        push!(cost, temp)
+    end
+
+    # Convert the cost matrix into a format that the Hungarian package can use.
+    cost_mat = hcat([i for i in cost]...)
+
+    # Runs the Hungarian Algorithm
+    assignment, cost = hungarian(cost_mat)
+
+    # index is the output array.
+    index = zero(length(bb))
+    for i = in eachindex(assignment)
+        if assignment[i] != 0
+            index[assignment[i]] = i
+        end
+    end
+    return index
 end
