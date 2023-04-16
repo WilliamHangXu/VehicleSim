@@ -1,6 +1,3 @@
-include("perception.jl")
-include("measurements.jl")
-
 struct SimpleVehicleState
     p1::Float64
     p2::Float64
@@ -28,16 +25,74 @@ struct MyPerceptionType
     x::Vector{SimpleVehicleState}
 end
 
-"""
-time: the time at which the corresponding camera measurement was taken.
-μ: an array of states of the objects being tracked.
-Σ: an array of variances of the states of objects being tracked.
-"""
-# struct MyPerceptionType
-#     time::Float64
-#     μ::SVector{13, Float64}
-#     Σ::Array{Float64, 2}
-# end
+function test_algorithms(gt_channel,
+        localization_state_channel,
+        perception_state_channel, 
+        ego_vehicle_id)
+    estimated_vehicle_states = Dict{Int, Tuple{Float64, Union{SimpleVehicleState, FullVehicleState}}}
+    gt_vehicle_states = Dict{Int, GroundTruthMeasurement}
+
+    t = time()
+    while true
+
+        while isready(gt_channel)
+            meas = take!(gt_channel)
+            id = meas.vehicle_id
+            if meas.time > gt_vehicle_states[id].time
+                gt_vehicle_states[id] = meas
+            end
+        end
+
+        latest_estimated_ego_state = fetch(localization_state_channel)
+        latest_true_ego_state = gt_vehicle_states[ego_vehicle_id]
+        if latest_estimated_ego_state.last_update < latest_true_ego_state.time - 0.5
+            @warn "Localization algorithm stale."
+        else
+            estimated_xyz = latest_estimated_ego_state.position
+            true_xyz = latest_true_ego_state.position
+            position_error = norm(estimated_xyz - true_xyz)
+            t2 = time()
+            if t2 - t > 5.0
+                @info "Localization position error: $position_error"
+                t = t2
+            end
+        end
+
+        latest_perception_state = fetch(perception_state_channel)
+        last_perception_update = latest_perception_state.last_update
+        vehicles = last_perception_state.x
+
+        for vehicle in vehicles
+            xy_position = [vehicle.p1, vehicle.p2]
+            closest_id = 0
+            closest_dist = Inf
+            for (id, gt_vehicle) in gt_vehicle_states
+                if id == ego_vehicle_id
+                    continue
+                else
+                    gt_xy_position = gt_vehicle_position[1:2]
+                    dist = norm(gt_xy_position-xy_position)
+                    if dist < closest_dist
+                        closest_id = id
+                        closest_dist = dist
+                    end
+                end
+            end
+            paired_gt_vehicle = gt_vehicle_states[closest_id]
+
+            # compare estimated to GT
+
+            if last_perception_update < paired_gt_vehicle.time - 0.5
+                @info "Perception upate stale"
+            else
+                # compare estimated to true size
+                estimated_size = [vehicle.l, vehicle.w, vehicle.h]
+                actual_size = paired_gt_vehicle.size
+                @info "Estimated size error: $(norm(actual_size-estimated_size))"
+            end
+        end
+    end
+end
 
 function localize(gps_channel, imu_channel, localization_state_channel)
     # Set up algorithm / initialize variables
@@ -63,8 +118,39 @@ function localize(gps_channel, imu_channel, localization_state_channel)
     end 
 end
 
+function fake_localize(gt_channel, localization_state_channel, ego_id)
+    while true
+        sleep(0.001)
+        fresh_gt_meas = []
+        while isready(gt_channel)
+            meas = take!(g5_channel)
+            push!(fresh_gt_meas, meas)
+        end
+
+        latest_meas_time = -Inf
+        latest_meas = nothing
+        for meas in fresh_gt_meas
+            if meas.time > latest_meas_time && meas.vehicle_id == ego_id
+                latest_meas = meas
+                latest_meas_time = meas.time
+            end
+        end
+
+        # Convert latest_meas to MyLocalizationType
+        time = latest_meas.time
+        fvs = FullVehicleState(latest_meas.position, latest_meas.orientation, latest_meas.velocity, latest_meas.angular_velocity)
+        my_converted_gt_message = MyLocalizationType(last_update, fvs)
+
+
+        if isready(localization_state_channel)
+            take!(localization_state_channel)
+        end
+        put!(localization_state_channel, my_converted_gt_messsage)
+    end
+end
+
 function perception(cam_meas_channel, localization_state_channel, perception_state_channel)
-    
+    # set up stuff
     while true
 
         # obtain camera measurements
@@ -192,7 +278,8 @@ function decision_making(localization_state_channel,
     end
 end
 
-function isfull(ch:Channel)
+
+function isfull(ch::Channel)
     length(ch.data) ≥ ch.sz_max
 end
 
@@ -229,7 +316,9 @@ function my_client(host::IPAddr=IPv4(0), port=4444)
         end
     end
 
-    @async localize(gps_channel, imu_channel, localization_state_channel)
+    #@async localize(gps_channel, imu_channel, localization_state_channel)
+    @async fake_localize(gt_channel, localization_state_channel, ego_vehicle_id)
     @async perception(cam_channel, localization_state_channel, perception_state_channel)
     @async decision_making(localization_state_channel, perception_state_channel, map, socket)
+    @async test_algorithms(gt_channel, localization_state_channel, perception_state_channel, ego_vehicle_id)
 end

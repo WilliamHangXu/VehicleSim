@@ -74,26 +74,61 @@ function keyboard_client(host::IPAddr=IPv4(0), port=4444; v_step = 1.0, s_step =
     end
 end
 
+# function example_client(host::IPAddr=IPv4(0), port=4444)
+#     socket = Sockets.connect(host, port)
+#     map_segments = training_map()
+#     (; chevy_base) = load_mechanism()
+
+#     @async while isopen(socket)
+#         state_msg = deserialize(socket)
+#     end
+   
+#     shutdown = false
+#     persist = true
+#     while isopen(socket)
+#         position = state_msg.q[5:7]
+#         @info position
+#         if norm(position) >= 100
+#             shutdown = true
+#             persist = false
+#         end
+#         cmd = VehicleCommand(0.0, 2.5, persist, shutdown)
+#         serialize(socket, cmd) 
+#     end
+
+# end
+
 function example_client(host::IPAddr=IPv4(0), port=4444)
     socket = Sockets.connect(host, port)
-    map_segments = training_map()
-    (; chevy_base) = load_mechanism()
+    (peer_host, peer_port) = getpeername(socket)
+    msg = deserialize(socket) # Visualization info
+    @info msg
 
-    @async while isopen(socket)
+    @async for j in 1:500
+        println(j)
         state_msg = deserialize(socket)
+        measurements = state_msg.measurements
+        @info state_msg
     end
-   
-    shutdown = false
-    persist = true
-    while isopen(socket)
-        position = state_msg.q[5:7]
-        @info position
-        if norm(position) >= 100
-            shutdown = true
-            persist = false
+
+    for i in 500:1500
+        println(i)
+        #latest_localization_state = fetch(localization_state_channel)
+        #latest_perception_state = fetch(perception_state_channel)
+
+        # figure out what to do ... setup motion planning problem etc
+        if i == 1500
+            steering_angle = 0.0
+            target_vel = 0.0
+            cmd = VehicleCommand(steering_angle, target_vel, false)
+            serialize(socket, cmd)
+            close(socket)
+        else
+            steering_angle = 0.0
+            target_vel = 0.5
+            cmd = VehicleCommand(steering_angle, target_vel, true)
+            serialize(socket, cmd)
         end
-        cmd = VehicleCommand(0.0, 2.5, persist, shutdown)
-        serialize(socket, cmd) 
     end
 
 end
