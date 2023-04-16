@@ -75,6 +75,38 @@ function Rot_from_quat(q)
          2(qx*qz-qw*qy) 2(qw*qx+qy*qz) qw^2-qx^2-qy^2+qz^2]
 end
 
+"""
+Can be used as process model for EKF
+which estimates xₖ = [position; quaternion; velocity; angular_vel]
+
+We haven't discussed quaternions in class much, but interfacing with GPS/IMU
+will be much easier using this representation, which is used internally by the simulator.
+"""
+function rigid_body_dynamics(position, quaternion, velocity, angular_vel, Δt)
+    r = angular_vel
+    mag = norm(r)
+
+    if mag < 1e-5
+        sᵣ = 1.0
+        vᵣ = zeros(3)
+    else
+        sᵣ = cos(mag*Δt / 2.0)
+        vᵣ = sin(mag*Δt / 2.0) * axis
+    end
+
+    sₙ = quaternion[1]
+    vₙ = quaternion[2:4]
+
+    s = sₙ*sᵣ - vₙ'*vᵣ
+    v = sₙ*vᵣ+sᵣ*vₙ+vₙ×vᵣ
+
+    new_position = position + Δt * velocity
+    new_quaternion = [s; v]
+    new_velocity = velocity
+    new_angular_vel = angular_vel
+    return [new_position; new_quaternion; new_velocity; new_angular_vel]
+end
+
 function get_rotated_camera_transform()
     R = [0 0 1.;
          -1 0 0;
@@ -132,7 +164,7 @@ function multiply_transforms(T1, T2)
     T = T[1:3, :]
 end
 
-function gps(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([1.0, 1.0]), max_rate=60.0)
+function gps(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([1.0, 1.0]), max_rate=20.0)
     min_Δ = 1.0/max_rate
     t = time()
     T = get_gps_transform()
@@ -143,8 +175,8 @@ function gps(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([1.0
         tnow = time()
         if tnow - t > min_Δ
             t = tnow
-            xyz_body = state.q[5:7]
-            q_body = state.q[1:4]
+            xyz_body = state.q[5:7] # position
+            q_body = state.q[1:4] # quaternion
             Tbody = get_body_transform(q_body, xyz_body)
             xyz_gps = Tbody * [gps_loc_body; 1]
             meas = xyz_gps[1:2] + sqrt_meas_cov*randn(2)
@@ -154,7 +186,7 @@ function gps(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([1.0
     end
 end
 
-function imu(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([0.01, 0.01, 0.01, 0.01, 0.01, 0.01]), max_rate=60.0)
+function imu(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([0.01, 0.01, 0.01, 0.01, 0.01, 0.01]), max_rate=20.0)
     min_Δ = 1.0/max_rate
     t = time()
     T_body_imu = get_imu_transform()
@@ -168,8 +200,8 @@ function imu(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([0.0
         tnow = time()
         if tnow - t > min_Δ
             t = tnow
-            v_body = state.v[4:6]
-            ω_body = state.v[1:3]
+            v_body = state.v[4:6] # velocity
+            ω_body = state.v[1:3] # angular_vel
 
             ω_imu = R * ω_body
             v_imu = R * v_body + p × ω_imu
@@ -183,8 +215,8 @@ function imu(vehicle, state_channel, meas_channel; sqrt_meas_cov = Diagonal([0.0
 end
 
 function get_3d_bbox_corners(state, box_size)
-    quat = state.q[1:4]
-    xyz = state.q[5:7]
+    quat = state.q[1:4] # quatnerion
+    xyz = state.q[5:7] # position
     T = get_body_transform(quat, xyz)
     corners = []
     for dx in [-box_size[1]/2, box_size[1]/2]
@@ -273,7 +305,7 @@ function cameras(vehicles, state_channels, cam_channels; max_rate=10.0, focal_le
     end
 end
 
-function ground_truth(vehicles, state_channels, gt_channels; max_rate=20.0) 
+function ground_truth(vehicles, state_channels, gt_channels; max_rate=10.0) 
     min_Δ = 1.0/max_rate
     t = time()
     num_vehicles = length(vehicles)

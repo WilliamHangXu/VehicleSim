@@ -15,7 +15,6 @@ using Suppressor
 using Sockets
 using Serialization
 using StaticArrays
-using DifferentialEquations
 
 include("view_car.jl")
 include("objects.jl")
@@ -26,6 +25,7 @@ include("sink.jl")
 include("measurements.jl")
 include("map.jl")
 include("tests.jl")
+include("example_project.jl")
 
 export server, shutdown!, keyboard_client, example_client, my_client
 
