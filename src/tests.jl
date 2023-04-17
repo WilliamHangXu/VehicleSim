@@ -11,7 +11,7 @@ end
 struct FullVehicleState
     position::SVector{3, Float64}
     velocity::SVector{3, Float64}
-    orientation::SVector{3, Float64}
+    orientation::SVector{4, Float64}
     angular_vel::SVector{3, Float64}
 end
 
@@ -123,46 +123,73 @@ function fake_localize(gt_channel, localization_state_channel, ego_id)
         sleep(0.001)
         fresh_gt_meas = []
         while isready(gt_channel)
-            meas = take!(g5_channel)
+            meas = take!(gt_channel)
             push!(fresh_gt_meas, meas)
         end
 
         latest_meas_time = -Inf
         latest_meas = nothing
         for meas in fresh_gt_meas
-            if meas.time > latest_meas_time && meas.vehicle_id == ego_id
+            #@info "vehicle id: $(meas.vehicle_id), time: $(meas.time), ego id: $(ego_id)"
+
+            if meas.time > latest_meas_time && meas.vehicle_id - 1 == ego_id
                 latest_meas = meas
                 latest_meas_time = meas.time
             end
+            
         end
-
+        # @info "$(latest_meas)"
+        if isnothing(latest_meas)
+            continue
+        end
+        # @info "test1"
+        
         # Convert latest_meas to MyLocalizationType
         time = latest_meas.time
-        fvs = FullVehicleState(latest_meas.position, latest_meas.orientation, latest_meas.velocity, latest_meas.angular_velocity)
-        my_converted_gt_message = MyLocalizationType(last_update, fvs)
-
+        # @info "test2"
+        fvs = FullVehicleState(latest_meas.position, latest_meas.velocity, latest_meas.orientation, latest_meas.angular_velocity)
+        # @info "test3"
+        my_converted_gt_message = MyLocalizationType(time, fvs)
+        # @info "test4"
 
         if isready(localization_state_channel)
             take!(localization_state_channel)
         end
-        put!(localization_state_channel, my_converted_gt_messsage)
+        # @info "test5"
+        
+        put!(localization_state_channel, my_converted_gt_message)
+        # @info "we have $(length(localization_state_channel.data))"
     end
 end
 
 function perception(cam_meas_channel, localization_state_channel, perception_state_channel)
+    
     # set up stuff
     while true
+        # @info "1"
 
         # obtain camera measurements
         fresh_cam_meas = []
+        @info "cam channel: $(length(cam_meas_channel.data))"
         while isready(cam_meas_channel)
             meas = take!(cam_meas_channel)
             push!(fresh_cam_meas, meas)
         end
 
+        @info "2"
+
         # Should we do this in the loop?
         # obtain localization information
-        latest_localization_state = fetch(localization_state_channel)
+        #latest_localization_state = fetch(localization_state_channel)
+        latest_localization_state = nothing
+        if isready(localization_state_channel)
+            latest_localization_state = fetch(localization_state_channel)
+        end
+        if isnothing(latest_localization_state)
+            continue
+        end
+        # @info "latest localization state: $(latest_localization_state)"
+        
         loc_state = latest_localization_state.x
         loc_time = latest_localization_state.last_update
         
@@ -190,12 +217,14 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
         μ_prev_list = []
         Σ_prev_list = []
 
+        μ_list = []
+        Σ_list = []
+
+        # @info "fresh camera meas: $(fresh_cam_meas)"
+
+        
         # Process camera measurements.
         for i in fresh_cam_meas
-
-            # clear these two lists.
-            μ_prev_list = []
-            Σ_prev_list = []
 
             # if i.time < curr_time, we just discard this measurement.
             if i.time > curr_time
@@ -213,8 +242,14 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
 
                     # assign μ_prev to bounding boxes
                     μ_index = assign_bb(i.camera_id, μ_prev_list, i.bounding_boxes, x_ego, Δ)
+                    # @info "μ index: $(μ_index)"
 
                     for j in eachindex(i.bounding_boxes)
+
+                        if isempty(μ_prev_list)
+                            μ_prev_list = [μ_init for i in length(i.bounding_boxes)]
+                            Σ_prev_list = [Σ_init for i in length(i.bounding_boxes)]
+                        end
 
                         # if bbox cannot be matched with a previous object, we perform EKF from start
                         # by giving it initial values for μ and Σ
@@ -224,7 +259,7 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
                         else
                             μ_prev = μ_init
                             Σ_prev = Σ_init
-                        end
+                        end                        
 
                         # Extended Kalman Filter
                         A = jac_f(μ_prev, Δ)
@@ -235,10 +270,16 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
                         Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
                         μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (i.bounding_boxes[j]))
                         μ_prev = μ
-                        push!(μ_prev_list, μ_prev)
+                        push!(μ_list, μ_prev)
                         Σ_prev = Σ
-                        push!(Σ_prev_list, Σ_prev)
+                        push!(Σ_list, Σ_prev)
                     end
+
+                    μ_prev_list = μ_list
+                    Σ_prev_list = Σ_list
+                    μ_list = []
+                    Σ_list = []
+                    # @info "μ prev list: $(μ_prev_list)"
                 end
                 prev_time = curr_time
             else
@@ -247,15 +288,18 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
         end
 
         # Output.
+        
         μ_prev_list_struct = []
         for i in μ_prev_list
             temp = SimpleVehicleState(i[1], i[2], i[3], i[4], i[5], i[6], i[7])
             push!(μ_prev_list_struct, temp)
         end
         perception_state = MyPerceptionType(curr_time, μ_prev_list_struct)
+        
         if isready(perception_state_channel)
             take!(perception_state_channel)
         end
+        
         put!(perception_state_channel, perception_state)
     end
 end
@@ -286,7 +330,10 @@ end
 
 function my_client(host::IPAddr=IPv4(0), port=4444)
     socket = Sockets.connect(host, port)
-    map_segments = training_map()
+    map_segments = VehicleSim.training_map()
+    
+    msg = deserialize(socket) # Visualization info
+    @info msg
 
     gps_channel = Channel{GPSMeasurement}(32)
     imu_channel = Channel{IMUMeasurement}(32)
@@ -299,26 +346,42 @@ function my_client(host::IPAddr=IPv4(0), port=4444)
     target_map_segment = 0 # (not a valid segment, will be overwritten by message)
     ego_vehicle_id = 0 # (not a valid id, will be overwritten by message. This is used for discerning ground-truth messages)
 
-    @async while true
-        measurement_msg = deserialize(socket)
-        target_map_segment = meas.target_segment
-        ego_vehicle_id = meas.vehicle_id
+    errormonitor(@async while true
+        # This while loop reads to the end of the socket stream (makes sure you
+        # are looking at the latest messages)
+        sleep(0.001)
+        local measurement_msg
+        received = false
+        while true
+            @async eof(socket)
+            if bytesavailable(socket) > 0
+                measurement_msg = deserialize(socket)
+                received = true
+            else
+                break
+            end
+        end
+        !received && continue
+        target_map_segment = measurement_msg.target_segment
+        # @info "meas msg: $(measurement_msg)"
+        ego_vehicle_id = measurement_msg.vehicle_id
         for meas in measurement_msg.measurements
             if meas isa GPSMeasurement
                 !isfull(gps_channel) && put!(gps_channel, meas)
             elseif meas isa IMUMeasurement
                 !isfull(imu_channel) && put!(imu_channel, meas)
             elseif meas isa CameraMeasurement
+                @info "cam: $(meas)"
                 !isfull(cam_channel) && put!(cam_channel, meas)
             elseif meas isa GroundTruthMeasurement
                 !isfull(gt_channel) && put!(gt_channel, meas)
             end
         end
-    end
+    end)
 
-    #@async localize(gps_channel, imu_channel, localization_state_channel)
+    # @async localize(gps_channel, imu_channel, localization_state_channel)
+
     @async fake_localize(gt_channel, localization_state_channel, ego_vehicle_id)
     @async perception(cam_channel, localization_state_channel, perception_state_channel)
-    @async decision_making(localization_state_channel, perception_state_channel, map, socket)
-    @async test_algorithms(gt_channel, localization_state_channel, perception_state_channel, ego_vehicle_id)
+    @async decision_making(localization_state_channel, perception_state_channel, map, target_map_segment, socket)
 end
