@@ -1,4 +1,5 @@
-include("measurements.jl")
+# include("measurements.jl")
+using Hungarian
 
 """
 This is the perception module of our autonomous vehicle.
@@ -52,6 +53,16 @@ function get_3d_bbox_corners_perception(position, θ, box_size)
         end
     end
     corners
+    # T = get_body_transform_perception(position)
+    # corners = []
+    # for dx in [-box_size[1]/2, box_size[1]/2]
+    #     for dy in [-box_size[2]/2, box_size[2]/2]
+    #         for dz in [-box_size[3]/2, box_size[3]/2]
+    #             push!(corners, T*[dx, dy, dz, 1])
+    #         end
+    #     end
+    # end
+    # corners
 end
 
 """
@@ -100,7 +111,7 @@ This function predicts bounding box measurements based on the state of the objec
 @param
 id: camera id (1 or 2)
 x: the state of the object being tracked [p1, p2, θ, v, l, w, h]
-x_ego: the state of ego vehicle [p1, p2, p3, r, p, y]
+x_ego: the state of ego vehicle [position; quaternion; velocity; angular_vel]
 @output
 z: bounding box measurement of the object being tracked [y1, y2, y3, y4]
 index: an array of size 4 that contains the index of 3d bbox corners that contributes to the 
@@ -112,18 +123,19 @@ rot_coord: an array of the coordinate of the 3d bbox corner expressed in rotated
 function h(id, x, x_ego, focal_len=0.01, pixel_len=0.001, image_width=640, image_height=480)
 
     # the position of the ego vehicle in world frame
-    x_ego_pos_world = x_ego[1]      # p1, p2, p3
+    x_ego_pos_world = x_ego[1:3]      # p1, p2, p3
+    
     # the position of the object in world frame
     x_pos_world = [x[1], x[2], 2.645] # p1, p2, p3
     # the angle of the ego vehicle
-    x_ego_angles = x_ego[2]         # quaternion
+    x_ego_angles = x_ego[4:7]         # quaternion
     # the size of object
     x_size = x[5:7]                   # l, w, h
     # this stores the 2d bounding box coordinates
-    z = []
+    z = []   
 
     # corners_world is an array that contains coordinates of 3d bbox of the object in world frame
-    corners_world = get_3d_bbox_corners_perception(x_pos_world, x_size)
+    corners_world = get_3d_bbox_corners_perception(x_pos_world, x[3], x_size)
 
     # This part takes care of the camera's angle and its relative position w.r.t. ego.
     T_body_cam = get_cam_transform(id)
@@ -135,7 +147,7 @@ function h(id, x, x_ego, focal_len=0.01, pixel_len=0.001, image_width=640, image
     T_body_camrot = multiply_transforms(T_body_cam, T_cam_camrot)
 
     # This part takes care of ego's rpy angles and the object's relative position w.r.t. ego.
-    T_world_body = get_body_transform(x_ego_pos_world, x_ego_angles)
+    T_world_body = get_body_transform(x_ego_angles, x_ego_pos_world)                
 
     # Combines all the transformations together (order matters)
     T_world_camrot = multiply_transforms(T_world_body, T_body_camrot) 
@@ -205,7 +217,7 @@ function h(id, x, x_ego, focal_len=0.01, pixel_len=0.001, image_width=640, image
     top = convert_to_pixel(image_height, pixel_len, top) # top 0.00924121388699952 => 251
     bot = convert_to_pixel(image_height, pixel_len, bot)
     left = convert_to_pixel(image_width, pixel_len, left)
-    top = convert_to_pixel(image_width, pixel_len, right)
+    right = convert_to_pixel(image_width, pixel_len, right)
 
     # 2d bbox information
     z = SVector(top, left, bot, right)
@@ -227,8 +239,10 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
     jac = []
 
     # j4 is the jacobian of the matrix that converts image frame into pixel values.
+    
     j4 = [1/pixel_len 0
     0 1/pixel_len]
+    
 
     # two cameras, each camera's 2d bbox has 4 values.
 
@@ -236,10 +250,11 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
         # j1 is the jacobian of the matrix that calculates world-frame coordinates of corners
         # of 3d bbox.
         j1 = jac_h_j1(x, h[2][j])
+        
 
         # j2 is the jacobian of the matrix that converts world-frame coordinates into rotated
         # camera frame.
-        j2 = h[3]
+        j2 = h[3][:, 1:3]
 
         # These are the xyz coordinates of a corner
         c1 = h[4][j][1]
@@ -252,8 +267,12 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
             focal_len/c3 0 -focal_len*c1*c3^(-2)
             0 focal_len/c3 -focal_len*c2*c3^(-2)
         ]
+        
 
         # Use chain rule to get the overall jacobian of the entire function. This should be 2*7
+        
+        
+
         j = j4 * j3 * j2 * j1
 
         # If we are dealing with top or bottom, we only need the second row of the jacobian, 
@@ -286,16 +305,34 @@ index: the index of the corner that we want. (We are looking down to the 1357 pl
 The jacobian.
 """
 function jac_h_j1(x, index)
+   
+    
     θ = x[3]
     l = x[5]
     w = x[6]
+    
     # This function turns index-1 into a 3-digit binary number. (i.e. 7->111)
-    exp = digits(index-1, base=2, pad=3)
-    exp += [1;1;1]
+    ex = digits(index-1, base=2, pad=3)
+    
+    ex += [1;1;1]
+    
+    # a = 0.5*(-1)^(ex[3]+1)*(sin(t)*l+cos(t)*w)
+    # @info "110"
+    # b = 0.5*(-1)^ex[3]*cos(θ)
+    # @info "111"
+    # c = (-1)^(ex[3]+1)*sin(θ)
+    # @info "112"
+    # d = 0.5*(-1)^ex[3]*cos(θ)*l
+    # @info "113"
+    # e = 0.5*(-1)^ex[3]*sin(θ)
+    # @info "114"
+    # f = 0.5*(-1)^ex[3]*cos(θ)*w
+    # @info "115"
+    
     [
-    1 0 0.5*(-1)^(exp[3]+1)(sin(θ)*l+cos(θ)*w) 0 0.5*(-1)^exp[3]*cos(θ) (-1)^(exp[3]+1)*sin(θ) 0
-    0 1 0.5*(-1)^exp[3]*cos(θ)*l 0 0.5*(-1)^exp[3]*sin(θ) 0.5*(-1)^exp[3]*cos(θ)*w 0
-    0 0 0 0 0 0 0.5*(-1)^exp[1]        
+    1 0 0.5*(-1)^(ex[3]+1)*(sin(θ)*l+cos(θ)*w) 0 0.5*(-1)^ex[3]*cos(θ) (-1)^(ex[3]+1)*sin(θ) 0
+    0 1 0.5*(-1)^ex[3]*cos(θ)*l 0 0.5*(-1)^ex[3]*sin(θ) 0.5*(-1)^ex[3]*cos(θ)*w 0
+    0 0 0 0 0 0 0.5*(-1)^ex[1]        
     ]
 end
 
@@ -336,60 +373,63 @@ EXTREMELY stupid implementation.
 -----------------(xa2, ya2)
 """
 function iou_bb(bb_a, bb_b)
-    xa1, ya1, xa2, ya2 = bb_a
-    xb1, yb1, xb2, yb2 = bb_b
+    
+    ya1, xa1, ya2, xa2 = bb_a
+    yb1, xb1, yb2, xb2 = bb_b
+    
     intersection = -1
-    if xa1 <= xb1 && ya1 >= yb1
-        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xa2-xb1)*(yb1-ya2)
-        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xb2-xb1)*(yb1-ya2)
-        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
-            intersection = (xa2-xb1)*(yb1-yb2)
-        elseif xa2 >= xb2 && ya2 <= yb2
-            intersection = (xb2-xb1)*(yb1-yb2)
+    if xa1 <= xb1 && ya1 <= yb1
+        if xa2 >= xb1 && xa2 < xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xa2-xb1)*(ya2-yb1)
+        elseif xa2 >= xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xb2-xb1)*(ya2-yb1)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 >= yb2
+            intersection = (xa2-xb1)*(yb2-yb1)
+        elseif xa2 >= xb2 && ya2 >= yb2
+            intersection = (xb2-xb1)*(yb2-yb1)
         else
             intersection = -1
         end
-    elseif xa1 <= xb2 && xa1 > xb1 && ya1 >= yb1
-        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xa2-xa1)*(yb1-ya2)
-        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xb2-xa1)*(yb1-ya2)
-        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
-            intersection = (xa2-xa1)*(yb1-yb2)
-        elseif xa2 >= xb2 && ya2 <= yb2
-            intersection = (xb2-xa1)*(yb1-yb2)
+    elseif xa1 <= xb2 && xa1 > xb1 && ya1 <= yb1
+        if xa2 >= xb1 && xa2 < xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xa2-xa1)*(ya2-yb1)
+        elseif xa2 >= xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xb2-xa1)*(ya2-yb1)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 >= yb2
+            intersection = (xa2-xa1)*(yb2-yb1)
+        elseif xa2 >= xb2 && ya2 >= yb2
+            intersection = (xb2-xa1)*(yb2-yb1)
         else
             intersection = -1
         end
-    elseif xa1 <= xb1 && ya1 >= yb2 && ya1 < yb1
-        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xa2-xb1)*(ya1-ya2)
-        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xb2-xb1)*(ya1-ya2)
-        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
-            intersection = (xa2-xb1)*(ya1-yb2)
-        elseif xa2 >= xb2 && ya2 <= yb2
-            intersection = (xb2-xb1)*(ya1-yb2)
+    elseif xa1 <= xb1 && ya1 <= yb2 && ya1 < yb1
+        if xa2 >= xb1 && xa2 < xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xa2-xb1)*(ya2-ya1)
+        elseif xa2 >= xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xb2-xb1)*(ya2-ya1)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 >= yb2
+            intersection = (xa2-xb1)*(yb2-ya1)
+        elseif xa2 >= xb2 && ya2 >= yb2
+            intersection = (xb2-xb1)*(yb2-ya1)
         else
             intersection = -1
         end
-    elseif xa1 > xb1 && xa1 <= xb2 && ya1 < yb1 && ya1 >= yb2
-        if xa2 >= xb1 && xa2 < xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xa2-xa1)*(ya1-ya2)
-        elseif xa2 >= xb2 && ya2 <= yb1 && ya2 > yb2
-            intersection = (xb2-xa1)*(ya1-ya2)
-        elseif xa2 < xb2 && xa2 >= xb1 && ya2 <= yb2
-            intersection = (xa2-xa1)*(ya1-yb2)
-        elseif xa2 >= xb2 && ya2 <= yb2
-            intersection = (xb2-xa1)*(ya1-yb2)
+    elseif xa1 > xb1 && xa1 <= xb2 && ya1 > yb1 && ya1 <= yb2
+        if xa2 >= xb1 && xa2 < xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xa2-xa1)*(ya2-ya1)
+        elseif xa2 >= xb2 && ya2 >= yb1 && ya2 < yb2
+            intersection = (xb2-xa1)*(ya2-ya1)
+        elseif xa2 < xb2 && xa2 >= xb1 && ya2 >= yb2
+            intersection = (xa2-xa1)*(yb2-ya1)
+        elseif xa2 >= xb2 && ya2 >= yb2
+            intersection = (xb2-xa1)*(yb2-ya1)
         else
             intersection = -1
         end
     else
         intersection = -1
     end
+    
     union = (xa2-xa1)*(ya1-ya2) + (xb2-xb1)*(yb1-yb2) - intersection
     return intersection/union
 end
@@ -412,7 +452,7 @@ An array. array[i] is the index of bbox in camera measurement k-1 that can be ma
 bbox in camera measurement k. If array[i] == 0, then it is likely that the ith bbox describes a vehicle
 that has just entered the vision of our vehicle, and we need to start a new EKF for it.
 """
-function assign_bb(camera_id, prev_state, bb, x_ego, iou_thr=0.5, Δ)
+function assign_bb(camera_id, prev_state, bb, x_ego, Δ, iou_thr=0.5)
 
     # From the previous result of EKF (the estimated state of the object in the bboxes from camera 
     # measurement k-1), we use our f function and h function to predict the bbox coordinates of these 
@@ -421,38 +461,47 @@ function assign_bb(camera_id, prev_state, bb, x_ego, iou_thr=0.5, Δ)
     # This array contains the predicted bboxes.
     bb_p = []
     for i in prev_state
-        state_p = f(i, Δ)
+        state_p = f(i, Δ)       
         h_p = h(camera_id, state_p, x_ego)
-        push!(bb_p, h_p)
+        push!(bb_p, h_p[1])
+        
     end
-
+    
     # This is the cost matrix of the Hungarian Algorithm.
     cost = []
     for i in bb_p
         temp = []
         for j in bb
-            iou  = iou_BB(i, j)
-            if iou < iou_thr
+            iou  = iou_bb(i, j)
+            if iou < iou_thr  
                 push!(temp, missing)
-            else
+            else          
                 push!(temp, 1-iou)
             end
         end
         push!(cost, temp)
     end
-
     # Convert the cost matrix into a format that the Hungarian package can use.
     cost_mat = hcat([i for i in cost]...)
+    
+    if eltype(cost_mat) == Missing
+        
+        return zero(length(bb))
+    else
+        # Runs the Hungarian Algorithm
+        
+        assignment, cost = Hungarian.hungarian(cost_mat)
+        
 
-    # Runs the Hungarian Algorithm
-    assignment, cost = hungarian(cost_mat)
-
-    # index is the output array.
-    index = zero(length(bb))
-    for i = in eachindex(assignment)
-        if assignment[i] != 0
-            index[assignment[i]] = i
+        # index is the output array.
+        index = zeros(length(bb))
+        
+        for i in eachindex(assignment)
+            
+            if assignment[i] != 0
+                index[assignment[i]] = i
+            end
         end
-    end
-    return index
+        return index
+    end    
 end

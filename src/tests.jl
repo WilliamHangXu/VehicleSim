@@ -1,3 +1,5 @@
+include("perception.jl")
+
 struct SimpleVehicleState
     p1::Float64
     p2::Float64
@@ -164,46 +166,183 @@ end
 
 function perception(cam_meas_channel, localization_state_channel, perception_state_channel)
     
-    # set up stuff
-    while true
-        # @info "1"
+    # # set up stuff
+    # while true
+    #     # @info "1"
 
-        # obtain camera measurements
+    #     # obtain camera measurements
+    #     fresh_cam_meas = []
+        
+    #     while isready(cam_meas_channel)
+            
+    #         meas = take!(cam_meas_channel)
+    #         push!(fresh_cam_meas, meas)
+    #     end
+
+    #     # Should we do this in the loop?
+    #     # obtain localization information
+    #     #latest_localization_state = fetch(localization_state_channel)
+    #     latest_localization_state = nothing
+    #     if isready(localization_state_channel)
+    #         latest_localization_state = fetch(localization_state_channel)
+    #     end
+    #     if isnothing(latest_localization_state)
+    #         continue
+    #     end
+    #     # @info "latest localization state: $(latest_localization_state)"
+        
+    #     loc_state = latest_localization_state.x
+    #     loc_time = latest_localization_state.last_update
+        
+    #     # Initial values of μ and Σ for x0
+    #     μ_init = [loc_state.position[1] loc_state.position[2] 0 0 13.2 5.7 5.3]
+    #     Σ_init = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+
+    #     # μₖ₋₁ and Σₖ₋₁. They are initialized as their initial value.
+    #     μ_prev = μ_init
+    #     Σ_prev = Σ_init
+
+    #     # Σ for measurement model and process model. Probably need to finetune them.
+    #     Σₘ = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+    #     Σₚ = Diagonal([0.1, 0.1, 0.1, 0.1])
+
+    #     # curr_time is the time at which the currently processing camera measurement is obtained.
+    #     curr_time = -Inf
+
+    #     # prev_time is the time at which the previously processed camera measurement is obtained.
+    #     prev_time = 0
+
+    #     # μ_prev_list is a list of predicted states of objects described by the bboxes in the previous 
+    #     # camera measurements. Σ_prev_list is similar, but it's for Σ. They are updated after EKF has
+    #     # processed each camera measurement.
+    #     μ_prev_list = []
+    #     Σ_prev_list = []
+
+    #     μ_list = []
+    #     Σ_list = []
+
+    #     # @info "fresh camera meas: $(fresh_cam_meas)"
+
+        
+    #     # Process camera measurements.
+    #     for i in fresh_cam_meas
+
+    #         # if i.time < curr_time, we just discard this measurement.
+    #         if i.time > curr_time
+    #             curr_time = i.time
+    #             if !isempty(i.bounding_boxes)
+                    
+    #                 # In case the localization information was not obtained at the same at which the
+    #                 # camera measurement was obtained, we predict the localization information at the
+    #                 # time the camera measurement was obtained, using the given localization information.
+    #                 x_ego = rigid_body_dynamics(loc_state.position, loc_state.orientation, loc_state.velocity, 
+    #                                             loc_state.angular_velocity, curr_time - loc_time)
+
+    #                 # Δ is the time step.
+    #                 Δ = curr_time - prev_time
+
+    #                 # assign μ_prev to bounding boxes
+    #                 μ_index = assign_bb(i.camera_id, μ_prev_list, i.bounding_boxes, x_ego, Δ)
+    #                 # @info "μ index: $(μ_index)"
+
+    #                 for j in eachindex(i.bounding_boxes)
+
+    #                     if isempty(μ_prev_list)
+    #                         μ_prev_list = [μ_init for i in length(i.bounding_boxes)]
+    #                         Σ_prev_list = [Σ_init for i in length(i.bounding_boxes)]
+    #                     end
+
+    #                     # if bbox cannot be matched with a previous object, we perform EKF from start
+    #                     # by giving it initial values for μ and Σ
+    #                     if μ_index[j] != 0
+    #                         μ_prev = μ_prev_list[μ_index[j]]
+    #                         Σ_prev = Σ_prev_list[μ_index[j]]
+    #                     else
+    #                         μ_prev = μ_init
+    #                         Σ_prev = Σ_init
+    #                     end                        
+
+    #                     # Extended Kalman Filter
+    #                     A = jac_f(μ_prev, Δ)
+    #                     Σ̂  = Σₘ + A * Σ_prev * A'
+    #                     μ̂  = f(μ_prev, Δ)
+    #                     h1 = h(i.camera_id, μ̂ , x_ego)
+    #                     C = jac_h(μ̂ , h1)
+    #                     Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
+    #                     μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (i.bounding_boxes[j]))
+    #                     μ_prev = μ
+    #                     push!(μ_list, μ_prev)
+    #                     Σ_prev = Σ
+    #                     push!(Σ_list, Σ_prev)
+    #                 end
+
+    #                 μ_prev_list = μ_list
+    #                 Σ_prev_list = Σ_list
+    #                 μ_list = []
+    #                 Σ_list = []
+    #                 # @info "μ prev list: $(μ_prev_list)"
+    #             end
+    #             prev_time = curr_time
+    #         else
+    #             continue
+    #         end
+    #     end
+
+    #     # Output.
+    #     @info "1"
+        
+    #     μ_prev_list_struct = []
+    #     for i in μ_prev_list
+    #         temp = SimpleVehicleState(i[1], i[2], i[3], i[4], i[5], i[6], i[7])
+    #         push!(μ_prev_list_struct, temp)
+    #     end
+    #     perception_state = MyPerceptionType(curr_time, μ_prev_list_struct)
+        
+    #     if isready(perception_state_channel)
+    #         take!(perception_state_channel)
+    #     end
+    #     @info "perception: $(perception_state)"
+        
+    #     put!(perception_state_channel, perception_state)
+    # end
+
+    while true
         fresh_cam_meas = []
-        @info "cam channel: $(length(cam_meas_channel.data))"
         while isready(cam_meas_channel)
             meas = take!(cam_meas_channel)
             push!(fresh_cam_meas, meas)
         end
 
-        @info "2"
-
         # Should we do this in the loop?
         # obtain localization information
-        #latest_localization_state = fetch(localization_state_channel)
-        latest_localization_state = nothing
-        if isready(localization_state_channel)
-            latest_localization_state = fetch(localization_state_channel)
-        end
-        if isnothing(latest_localization_state)
-            continue
-        end
+        
+        latest_localization_state = fetch(localization_state_channel)
+        # @info "localization state: $(latest_localization_state)"
+        # latest_localization_state = nothing
+        # if isready(localization_state_channel)
+        #     latest_localization_state = fetch(localization_state_channel)
+        # end
+        # if isnothing(latest_localization_state)
+        #     continue
+        # end
         # @info "latest localization state: $(latest_localization_state)"
         
         loc_state = latest_localization_state.x
         loc_time = latest_localization_state.last_update
+        # @info "loc_state: $(loc_state)"
+        # @info "loc_time: $(loc_time)"
         
         # Initial values of μ and Σ for x0
-        μ_init = [loc_state.position[1] loc_state.position[2] 0 0 13.2 5.7 5.3]
-        Σ_init = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
+        μ_init = [loc_state.position[1]+14 loc_state.position[2] 0 0.3 13.2 5.7 5.3]
+        Σ_init = Diagonal([5, 5, 0.01, 1, 0.01, 0.01, 0.01])
 
         # μₖ₋₁ and Σₖ₋₁. They are initialized as their initial value.
         μ_prev = μ_init
         Σ_prev = Σ_init
 
         # Σ for measurement model and process model. Probably need to finetune them.
-        Σₘ = Diagonal([5, 5, 0, 1, 0.01, 0.01, 0.01])
-        Σₚ = Diagonal([0.1, 0.1, 0.1, 0.1])
+        Σₘ = Diagonal([3, 3, 0.001, 1, 0.001, 0.001, 0.001])
+        Σₚ = Diagonal([1, 1, 1, 1])
 
         # curr_time is the time at which the currently processing camera measurement is obtained.
         curr_time = -Inf
@@ -220,36 +359,48 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
         μ_list = []
         Σ_list = []
 
-        # @info "fresh camera meas: $(fresh_cam_meas)"
-
         
+
         # Process camera measurements.
         for i in fresh_cam_meas
+            #@info "cam_meas: $(i)"
+            
 
             # if i.time < curr_time, we just discard this measurement.
-            if i.time > curr_time
+            if i.time >= curr_time
                 curr_time = i.time
+                #@info "cur time: $(curr_time)"
+                
                 if !isempty(i.bounding_boxes)
-                    
+                                  
                     # In case the localization information was not obtained at the same at which the
                     # camera measurement was obtained, we predict the localization information at the
                     # time the camera measurement was obtained, using the given localization information.
+                    # @info "position: $(loc_state.position)"
+                    # @info "orientation: $(loc_state.orientation)"
+                    # @info "velocity: $(loc_state.velocity)"
+                    # @info "angular velocity: $(loc_state.angular_vel)"
+                    # @info "Δ: $(curr_time - loc_time)"
                     x_ego = rigid_body_dynamics(loc_state.position, loc_state.orientation, loc_state.velocity, 
-                                                loc_state.angular_velocity, curr_time - loc_time)
+                                                loc_state.angular_vel, curr_time - loc_time)
+                    #@info "x_ego: $(x_ego)"
 
                     # Δ is the time step.
                     Δ = curr_time - prev_time
+                    #@info "Δ: $(Δ)"
 
                     # assign μ_prev to bounding boxes
-                    μ_index = assign_bb(i.camera_id, μ_prev_list, i.bounding_boxes, x_ego, Δ)
-                    # @info "μ index: $(μ_index)"
+                    if isempty(μ_prev_list)
+                        μ_prev_list = [μ_init for i in length(i.bounding_boxes)]
+                        Σ_prev_list = [Σ_init for i in length(i.bounding_boxes)]
+                    end
+
+                    #@info "μ_prev_list: $(μ_prev_list)"
+
+                    μ_index_raw = assign_bb(i.camera_id, μ_prev_list, i.bounding_boxes, x_ego, Δ)
+                    μ_index = [trunc(Int, i) for i in μ_index_raw]
 
                     for j in eachindex(i.bounding_boxes)
-
-                        if isempty(μ_prev_list)
-                            μ_prev_list = [μ_init for i in length(i.bounding_boxes)]
-                            Σ_prev_list = [Σ_init for i in length(i.bounding_boxes)]
-                        end
 
                         # if bbox cannot be matched with a previous object, we perform EKF from start
                         # by giving it initial values for μ and Σ
@@ -259,17 +410,35 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
                         else
                             μ_prev = μ_init
                             Σ_prev = Σ_init
-                        end                        
+                        end 
+                        #@info "μ_prev1: $(μ_prev)"    
+                              
 
                         # Extended Kalman Filter
                         A = jac_f(μ_prev, Δ)
+                       
                         Σ̂  = Σₘ + A * Σ_prev * A'
+                        
                         μ̂  = f(μ_prev, Δ)
+                        
                         h1 = h(i.camera_id, μ̂ , x_ego)
+                        
                         C = jac_h(μ̂ , h1)
+                        
+                        # @info "A: $(A)"
+                        # @info "Σ_prev: $(Σ_prev)"
+                        # @info "Σₘ: $(Σₘ)"
+                        # @info "Σ̂ : $(Σ̂ )"
+                        # @info "inv(Σ̂ ): $(inv(Σ̂ ))"
+                        # @info "inv(Σₚ): $(inv(Σₚ))"
                         Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
+                        
+                        # @info "9"
                         μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (i.bounding_boxes[j]))
+                        
+                        # @info "10"
                         μ_prev = μ
+                        #@info "μ_prev2: $(μ_prev)"
                         push!(μ_list, μ_prev)
                         Σ_prev = Σ
                         push!(Σ_list, Σ_prev)
@@ -281,25 +450,28 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
                     Σ_list = []
                     # @info "μ prev list: $(μ_prev_list)"
                 end
+                
                 prev_time = curr_time
             else
+                
                 continue
             end
         end
 
-        # Output.
-        
         μ_prev_list_struct = []
         for i in μ_prev_list
             temp = SimpleVehicleState(i[1], i[2], i[3], i[4], i[5], i[6], i[7])
             push!(μ_prev_list_struct, temp)
         end
         perception_state = MyPerceptionType(curr_time, μ_prev_list_struct)
-        
+        #if perception_state.last_update != -Inf
+        @info "perpection: $(perception_state)"
+        #end
+
+        #perception_state = MyPerceptionType(0.0, [])
         if isready(perception_state_channel)
             take!(perception_state_channel)
         end
-        
         put!(perception_state_channel, perception_state)
     end
 end
@@ -327,6 +499,31 @@ function isfull(ch::Channel)
     length(ch.data) ≥ ch.sz_max
 end
 
+function debug(gt_channel, cam_meas_channel, ego_vehicle_id)
+    while true
+        fresh_cam_meas = []
+        while isready(cam_meas_channel)
+            meas = take!(cam_meas_channel)
+            push!(fresh_cam_meas, meas)
+        end
+
+        gt_x = []
+        gt_ego = []
+        while isready(gt_channel)
+            meas = take!(gt_channel)
+            if meas.vehicle_id != ego_vehicle_id
+                push!(gt_x, meas)
+            else
+                push!(gt_ego, meas)
+            end
+        end
+        
+
+
+
+    end
+
+end
 
 function my_client(host::IPAddr=IPv4(0), port=4444)
     socket = Sockets.connect(host, port)
@@ -371,9 +568,15 @@ function my_client(host::IPAddr=IPv4(0), port=4444)
             elseif meas isa IMUMeasurement
                 !isfull(imu_channel) && put!(imu_channel, meas)
             elseif meas isa CameraMeasurement
-                @info "cam: $(meas)"
+                # @info "cam: $(meas)"
                 !isfull(cam_channel) && put!(cam_channel, meas)
             elseif meas isa GroundTruthMeasurement
+                if meas.vehicle_id != ego_vehicle_id
+                    pos = meas.position[1:2]
+                    temp = [pos[1], pos[2], 0, 0, 13.2, 5.7, 5.3]
+                    time = meas.time
+                    @info "gt_x: $(time), $(temp)"
+                end
                 !isfull(gt_channel) && put!(gt_channel, meas)
             end
         end
