@@ -466,7 +466,6 @@ function assign_bb(camera_id, prev_state, bb, x_ego, Δ, iou_thr=0.5)
         push!(bb_p, h_p[1])
         
     end
-    
     # This is the cost matrix of the Hungarian Algorithm.
     cost = []
     for i in bb_p
