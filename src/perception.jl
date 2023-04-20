@@ -233,7 +233,7 @@ h: The output of h
 focal_len: focal length of the camera
 pixel_len: size of a pixel
 @output
-The jacobian of h. Should be a 8*7 matrix.
+The jacobian of h. Should be a 4*7 matrix.
 """
 function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
     jac = []
@@ -243,7 +243,6 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
     j4 = [1/pixel_len 0
     0 1/pixel_len]
     
-
     # two cameras, each camera's 2d bbox has 4 values.
 
     for j = 1:4
@@ -271,8 +270,6 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
 
         # Use chain rule to get the overall jacobian of the entire function. This should be 2*7
         
-        
-
         j = j4 * j3 * j2 * j1
 
         # If we are dealing with top or bottom, we only need the second row of the jacobian, 
@@ -331,8 +328,8 @@ function jac_h_j1(x, index)
     
     [
     1 0 0.5*(-1)^(ex[3]+1)*(sin(θ)*l+cos(θ)*w) 0 0.5*(-1)^ex[3]*cos(θ) (-1)^(ex[3]+1)*sin(θ) 0
-    0 1 0.5*(-1)^ex[3]*cos(θ)*l 0 0.5*(-1)^ex[3]*sin(θ) 0.5*(-1)^ex[3]*cos(θ)*w 0
-    0 0 0 0 0 0 0.5*(-1)^ex[1]        
+    0 1 0.5*(-1)^ex[2]*(cos(θ)*l-sin(θ)*w) 0 0.5*(-1)^ex[2]*sin(θ) 0.5*(-1)^ex[2]*cos(θ) 0
+    0 0 0 0 0 0 0.5*(-1)^ex[1]
     ]
 end
 
