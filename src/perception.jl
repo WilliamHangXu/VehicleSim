@@ -1,4 +1,3 @@
-# include("measurements.jl")
 using Hungarian
 
 """
@@ -7,16 +6,15 @@ We use Extended Kalman Filter (EKF) to estimate the state of objects (other cars
 cameras.
 
 Outline of EKF:
-    a. Previous measurement: P(xₖ | xₖ₋₁) = 𝒩(μₖ₋₁, Σₖ₋₁)
+    a. Previous measurement: P(xₖ₋₁ | Z₁:ₖ₋₁) = 𝒩(μₖ₋₁, Σₖ₋₁)
     b. Process model: P(xₖ | xₖ₋₁) = 𝒩(f(xₖ₋₁), Σₚ)
     c. Measurement model: P(zₖ | xₖ) = 𝒩(h(xₖ, x_egoₖ), Σₘ)
     where x = [p1, p2, θ, v, l, w, h] describes the state of an object, 
-    and z = [y1, y2, y3, y4, y5, y6, y7, y8] describes the measurement (bb) collected by the two 
-    cameras.
+    and z = [y1, y2, y3, y4] describes the measurement (bb) collected by the camera.
 """
 
 """
-# Modified from get_body_transform in measurement.jl by Gavin and William
+# Modified from get_body_transform in measurement.jl by William
 This function calculates a matrix that expresses a point in a loc-centered frame into world frame.
 @param
 loc: the coordinate of a point.
@@ -29,7 +27,7 @@ function get_body_transform_perception(loc, R=one(RotMatrix{3, Float64}))
 end
 
 """
-# Modified from get_3d_bbox_corners in measurement.jl by Gavin
+# Modified from get_3d_bbox_corners in measurement.jl by William
 This function calculates the coordinates of the 8 corners of the 3D bounding box describing the
 object.
 @param
@@ -53,16 +51,6 @@ function get_3d_bbox_corners_perception(position, θ, box_size)
         end
     end
     corners
-    # T = get_body_transform_perception(position)
-    # corners = []
-    # for dx in [-box_size[1]/2, box_size[1]/2]
-    #     for dy in [-box_size[2]/2, box_size[2]/2]
-    #         for dz in [-box_size[3]/2, box_size[3]/2]
-    #             push!(corners, T*[dx, dy, dz, 1])
-    #         end
-    #     end
-    # end
-    # corners
 end
 
 """
@@ -86,7 +74,7 @@ function f(x, Δ)
 end
 
 """
-This function calculates the jacobian of the f function above.
+This function calculates the jacobian of the f function above. Created by William
 @param
 x: previous state
 Δ: time step
@@ -226,7 +214,7 @@ function h(id, x, x_ego, focal_len=0.01, pixel_len=0.001, image_width=640, image
 end
 
 """
-This function calculates the jacobian of h function.
+This function calculates the jacobian of h function. Created by William
 @param
 x: the input of h.
 h: The output of h
@@ -239,17 +227,14 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
     jac = []
 
     # j4 is the jacobian of the matrix that converts image frame into pixel values.
-    
     j4 = [1/pixel_len 0
     0 1/pixel_len]
     
-    # two cameras, each camera's 2d bbox has 4 values.
-
     for j = 1:4
+
         # j1 is the jacobian of the matrix that calculates world-frame coordinates of corners
         # of 3d bbox.
         j1 = jac_h_j1(x, h[2][j])
-        
 
         # j2 is the jacobian of the matrix that converts world-frame coordinates into rotated
         # camera frame.
@@ -266,10 +251,8 @@ function jac_h(x, h, focal_len=0.01, pixel_len=0.001)
             focal_len/c3 0 -focal_len*c1*c3^(-2)
             0 focal_len/c3 -focal_len*c2*c3^(-2)
         ]
-        
 
         # Use chain rule to get the overall jacobian of the entire function. This should be 2*7
-        
         j = j4 * j3 * j2 * j1
 
         # If we are dealing with top or bottom, we only need the second row of the jacobian, 
@@ -286,7 +269,7 @@ end
 
 """
 The h function above can be broken down into 4 matrix operations. This function calculates the jacobian
-of the first matrix operation (generating bbox corners).
+of the first matrix operation (generating bbox corners). Created by William
 @param 
 index: the index of the corner that we want. (We are looking down to the 1357 plane)
      7------5
@@ -303,71 +286,34 @@ The jacobian.
 """
 function jac_h_j1(x, index)
    
-    
     θ = x[3]
     l = x[5]
     w = x[6]
     
     # This function turns index-1 into a 3-digit binary number. (i.e. 7->111)
+    # These numbers indicate the positive and negative signs for the calculation of the 8 corners.
     ex = digits(index-1, base=2, pad=3)
     
     ex += [1;1;1]
     
-    # a = 0.5*(-1)^(ex[3]+1)*(sin(t)*l+cos(t)*w)
-    # @info "110"
-    # b = 0.5*(-1)^ex[3]*cos(θ)
-    # @info "111"
-    # c = (-1)^(ex[3]+1)*sin(θ)
-    # @info "112"
-    # d = 0.5*(-1)^ex[3]*cos(θ)*l
-    # @info "113"
-    # e = 0.5*(-1)^ex[3]*sin(θ)
-    # @info "114"
-    # f = 0.5*(-1)^ex[3]*cos(θ)*w
-    # @info "115"
-    
     [
     1 0 0.5*(-1)^(ex[3]+1)*(sin(θ)*l+cos(θ)*w) 0 0.5*(-1)^ex[3]*cos(θ) 0.5*(-1)^(ex[3]+1)*sin(θ) 0
-    0 1 0.5*(-1)^ex[2]*(cos(θ)*l-sin(θ)*w) 0 0.5*(-1)^ex[2]*sin(θ) 0.5*(-1)^(ex[2]+1)*cos(θ) 0
-    0 0 0 0 0 0 0.5*(-1)^ex[1]
+    0 1 0.5*(-1)^ex[2]*(cos(θ)*l-sin(θ)*w) 0 0.5*(-1)^ex[2]*sin(θ) 0.5*(-1)^(ex[2])*cos(θ) 0
+    0 0 0 0 0 0 0.5+0.5*(-1)^ex[1]
     ]
-end
-
-"""
-The EKF driver. Currently not in use.
-Previous measurement: P(xₖ | xₖ₋₁) = 𝒩(μₖ₋₁, Σₖ₋₁)
-Process model: P(xₖ | xₖ₋₁) = 𝒩(f(xₖ₋₁), Σₚ)
-Measurement model: P(zₖ | xₖ) = 𝒩(h(xₖ, x_egoₖ), Σₘ)
-
-@param
-id: camera id
-"""
-function EKF(id, μₖ₋₁, Σₖ₋₁, Σₘ, Σₚ, zₖ, x_ego, Δ)
-    A = jac_f(μₖ₋₁, Δ)
-    Σ̂  = Σₘ + A * Σₖ₋₁ * A'
-    μ̂  = f(μₖ₋₁, Δ)
-    h1 = h(id, μ̂ , x_ego)
-    C = jac_h(μ̂ , h1)
-    Σ = inv(inv(Σ̂ )+ C' * inv(Σₚ) * C)
-    μ = Σ * (inv(Σ̂ ) * μ̂ + C' * inv(Σₚ) * (zₖ))
-    [μ, Σ]
 end
 
 """
 Given the coordinates of two 2d bboxes, calculate the ratio of the area of intersection and union.
 This is know as IOU. IOU < 1. Large IOU value indicates that the two bboxes overlap a lot.
-EXTREMELY stupid implementation.
-(xa1, ya1)-----------------
-|                         |
-|                         |
-|                         |
-|                         |
-|                         |
-|                         |
-|                         |
-|                         |
-|                         |
------------------(xa2, ya2)
+EXTREMELY stupid implementation. Created by William
+(xa1, ya1)-------
+|               |
+|               |
+|               |
+|               |
+|               |
+---------(xa2, ya2)
 """
 function iou_bb(bb_a, bb_b)
     
@@ -433,7 +379,7 @@ end
 
 """
 The purpose of this function is to match bounding boxes in camera measurement k with those in camera
-measurement k-1. An external package, Hungarian, is used.
+measurement k-1. An external package, Hungarian, is used. Created by William.
 https://github.com/Gnimuc/Hungarian.jl
 @param
 camera_id: camera id
@@ -463,6 +409,7 @@ function assign_bb(camera_id, prev_state, bb, x_ego, Δ, iou_thr=0.5)
         push!(bb_p, h_p[1])
         
     end
+
     # This is the cost matrix of the Hungarian Algorithm.
     cost = []
     for i in bb_p
@@ -477,23 +424,20 @@ function assign_bb(camera_id, prev_state, bb, x_ego, Δ, iou_thr=0.5)
         end
         push!(cost, temp)
     end
+
     # Convert the cost matrix into a format that the Hungarian package can use.
     cost_mat = hcat([i for i in cost]...)
     
     if eltype(cost_mat) == Missing
-        
         return zero(length(bb))
     else
+
         # Runs the Hungarian Algorithm
-        
         assignment, cost = Hungarian.hungarian(cost_mat)
         
-
         # index is the output array.
         index = zeros(length(bb))
-        
         for i in eachindex(assignment)
-            
             if assignment[i] != 0
                 index[assignment[i]] = i
             end
