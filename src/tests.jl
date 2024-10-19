@@ -287,6 +287,7 @@ function perception(cam_meas_channel, localization_state_channel, perception_sta
             push!(μ_prev_list_struct, temp)
         end
         perception_state = MyPerceptionType(curr_time, μ_prev_list_struct)
+        @info "perception: $(perception_state)"
         if isready(perception_state_channel)
             take!(perception_state_channel)
         end
